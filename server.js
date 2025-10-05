@@ -9,6 +9,8 @@ import Stripe from 'stripe';
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
+app.use(express.static("public"));
+
 
 const {
   PORT = 3000,
