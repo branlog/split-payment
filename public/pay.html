@@ -57,6 +57,35 @@
           } else {
             out.textContent = "✅ Statut: " + paymentIntent.status + "\nPaymentIntent ID: " + paymentIntent.id;
           }
+          // Après le paiement réussi :
+if (paymentIntent.status === "succeeded") {
+  fetch("https://split-payment-uymv.onrender.com/checkout/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      payment_intent_id: paymentIntent.id,
+      card_amount: 2599, // tu peux dynamiquement mettre le montant carte
+      cod_amount: 1899,  // si tu veux tester le split complet
+      customer: { email: "client@example.com" },
+      shipping_address: {
+        first_name: "Jean",
+        last_name: "Dubois",
+        address1: "123 Rue",
+        city: "Quebec",
+        country: "CA"
+      },
+      items: [{ variant_id: 123, qty: 1, pay_method: "card" }]
+    })
+  })
+  .then(r => r.json())
+  .then(res => {
+    out.textContent += "\n\n📦 Commande Shopify : " + JSON.stringify(res, null, 2);
+  })
+  .catch(err => {
+    out.textContent += "\n\n❌ Erreur de confirmation : " + err;
+  });
+}
+
         }catch(e){
           out.textContent = "❌ " + (e.message || e);
         }
