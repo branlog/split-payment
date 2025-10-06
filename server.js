@@ -88,69 +88,77 @@ app.post('/checkout/create', async (req, res) => {
 });
 
 // Route: confirm (called after successful card payment)
-app.post('/checkout/confirm', async (req, res) => {
+// --------------------- CONFIRM: crée les commandes Shopify ---------------------
+app.post("/checkout/confirm", async (req, res) => {
   try {
-    const { customer, shipping_address, items, stripe_payment_intent_id } = req.body;
+    const {
+      stripe_payment_intent_id,   // pi_...
+      customer,
+      shipping_address,
+      items = []
+    } = req.body || {};
 
-    if (stripe_payment_intent_id) {
-      const pi = await stripe.paymentIntents.retrieve(stripe_payment_intent_id);
-      if (pi.status !== 'succeeded') {
-        return res.status(400).json({ error: 'payment_not_succeeded', status: pi.status });
-      }
-    }
+    // Sépare selon la méthode choisie sur le panier
+    const cardItems = items.filter(i => i?.pay_method === "card" && i?.qty > 0);
+    const codItems  = items.filter(i => i?.pay_method === "cod"  && i?.qty > 0);
 
-    const cardItems = items.filter(i => i.pay_method === 'card');
-    const codItems  = items.filter(i => i.pay_method === 'cod');
+    const toLine = (it) => ({
+      variant_id: Number(it.variant_id),
+      quantity: Number(it.qty)
+      // (Shopify recalcule le prix selon le variant — pas besoin d'envoyer price ici)
+    });
 
-    const toLineItems = (arr) => arr.map(i => ({
-      variant_id: i.variant_id,
-      quantity: i.qty
-    }));
+    const headers = {
+      "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
+      "Content-Type": "application/json"
+    };
 
-    let created = {};
+    const base = `https://${SHOP_DOMAIN}/admin/api/2024-10`;
 
-    if (cardItems.length > 0) {
-      const paidPayload = {
-        line_items: toLineItems(cardItems),
-        financial_status: 'paid',
-        transactions: [{
-          kind: 'sale',
-          status: 'success',
-          amount: (cardItems.reduce((s,i)=>s + (i.price_cents*i.qty),0) / 100).toFixed(2),
-          gateway: 'stripe'
-        }],
-        shipping_address,
-        customer,
-        note_attributes: [{ name: 'split_group', value: 'card' }]
+    const created = {};
+
+    // --- Commande "carte" (déjà payée Stripe) ---
+    if (cardItems.length) {
+      const payloadPaid = {
+        order: {
+          email: customer?.email || "client@example.com",
+          financial_status: "paid",
+          line_items: cardItems.map(toLine),
+          shipping_address: shipping_address || undefined,
+          tags: "split-checkout, paid-part"
+        }
       };
-      const paidOrder = await createShopifyOrder(paidPayload);
-      created.paid_order = paidOrder;
-    }
-
-    if (codItems.length > 0) {
-      const codPayload = {
-        line_items: toLineItems(codItems),
-        financial_status: 'pending',
-        transactions: [{
-          kind: 'authorization',
-          status: 'pending',
-          amount: (codItems.reduce((s,i)=>s + (i.price_cents*i.qty),0) / 100).toFixed(2),
-          gateway: 'cash_on_delivery'
-        }],
-        shipping_address,
-        customer,
-        note_attributes: [{ name: 'split_group', value: 'cod' }]
+      const rPaid = await axios.post(`${base}/orders.json`, payloadPaid, { headers });
+      created.paid_order = {
+        id: rPaid.data?.order?.id,
+        name: rPaid.data?.order?.name
       };
-      const codOrder = await createShopifyOrder(codPayload);
-      created.cod_order = codOrder;
     }
 
-    res.json({ ok: true, created });
+    // --- Commande "COD" (paiement à la livraison) ---
+    if (codItems.length) {
+      const payloadCOD = {
+        order: {
+          email: customer?.email || "client@example.com",
+          financial_status: "pending", // en attente / à la livraison
+          line_items: codItems.map(toLine),
+          shipping_address: shipping_address || undefined,
+          tags: "split-checkout, cod-part"
+        }
+      };
+      const rCod = await axios.post(`${base}/orders.json`, payloadCOD, { headers });
+      created.cod_order = {
+        id: rCod.data?.order?.id,
+        name: rCod.data?.order?.name
+      };
+    }
+
+    return res.json({ ok: true, created });
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ error: 'server_error', detail: err.response?.data || err.message });
+    console.error("CONFIRM ERROR", err?.response?.data || err.message);
+    return res.status(400).json({
+      ok: false,
+      error: err?.response?.data || err.message
+    });
   }
 });
-
-app.get('/', (req, res) => res.send('Split checkout server running'));
-app.listen(process.env.PORT || 3000, () => console.log(`✅ Server on http://localhost:${process.env.PORT || 3000}`));
