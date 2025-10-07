@@ -63,7 +63,65 @@ app.post('/checkout/confirm', async (req, res) => {
     }
     if (!stripe_payment_intent_id) {
       return res.status(400).json({ ok: false, error: 'missing payment id' });
+    }// --- create COD (Cash On Delivery) Shopify order
+app.post('/checkout/cod', async (req, res) => {
+  try {
+    const { customer = {}, shipping_address = {}, items = [], total_cents = 0 } = req.body || {};
+
+    if (!SHOPIFY_ACCESS_TOKEN || !SHOP_DOMAIN) {
+      return res.status(400).json({ ok: false, error: 'Missing Shopify credentials' });
     }
+
+    // Construire line_items
+    const line_items = items.length
+      ? items.map((it) => ({
+          title: it.title || 'Article COD',
+          quantity: it.qty || 1,
+          price: ((it.price_cents ?? 0) / 100).toFixed(2)
+        }))
+      : [
+          {
+            title: 'Paiement à la livraison',
+            quantity: 1,
+            price: (total_cents / 100).toFixed(2)
+          }
+        ];
+
+    const orderPayload = {
+      order: {
+        email: customer.email || 'client@example.com',
+        currency: 'CAD',
+        financial_status: 'pending', // Non payé
+        line_items,
+        shipping_address,
+        note: 'Commande COD (paiement à la livraison)',
+        send_receipt: false,
+        send_fulfillment_receipt: false
+      }
+    };
+
+    const shopifyResp = await axios.post(
+      `https://${SHOP_DOMAIN}/admin/api/2024-10/orders.json`,
+      orderPayload,
+      {
+        headers: {
+          'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+          'Content-Type': 'application/json'
+        },
+        timeout: 15000
+      }
+    );
+
+    return res.json({ ok: true, created: shopifyResp.data });
+  } catch (err) {
+    console.error('COD ERROR', err?.response?.data || err.message || err);
+    return res.status(500).json({
+      ok: false,
+      error: err?.response?.data || err.message || 'server_error'
+    });
+  }
+});
+
 
     // 1) Vérifier le PaymentIntent Stripe
     const pi = await stripe.paymentIntents.retrieve(stripe_payment_intent_id);
