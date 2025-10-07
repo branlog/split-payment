@@ -91,5 +91,48 @@ if (paymentIntent.status === "succeeded") {
         }
       };
     </script>
+    <script>
+  async function handlePayment() {
+    const stripe = Stripe(document.getElementById("pk").value);
+    const clientSecret = document.getElementById("secret").value;
+
+    const elements = stripe.elements();
+    const cardElement = elements.create("card");
+    cardElement.mount("#card-element");
+
+    const result = await stripe.confirmCardPayment(clientSecret, {
+      payment_method: {
+        card: cardElement,
+      },
+    });
+
+    const resultDiv = document.getElementById("result");
+    if (result.error) {
+      resultDiv.innerHTML = "❌ Erreur : " + result.error.message;
+    } else if (result.paymentIntent.status === "succeeded") {
+      resultDiv.innerHTML =
+        "<p>✅ Statut : succeeded</p><p>PaymentIntent ID: " +
+        result.paymentIntent.id +
+        "</p>";
+
+      // ⬇️ Envoie l’ID au backend pour créer la commande Shopify
+      const confirmRes = await fetch("/checkout/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stripe_payment_intent_id: result.paymentIntent.id,
+          customer: { email: "client@example.com" },
+          shipping_address: { address1: "Test", city: "Québec" },
+          items: [],
+        }),
+      });
+
+      const data = await confirmRes.json();
+      resultDiv.innerHTML +=
+        "<pre>📦 Commande Shopify : " + JSON.stringify(data, null, 2) + "</pre>";
+    }
+  }
+</script>
+
   </body>
 </html>
