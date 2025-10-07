@@ -17,6 +17,110 @@ const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOP_DOMAIN = process.env.SHOP_DOMAIN;
 
 const stripe = new Stripe(STRIPE_SECRET_KEY || '', { apiVersion: '2024-06-20' });
+// --- CREATE PaymentIntent (Stripe)
+app.post('/checkout/create', async (req, res) => {
+  try {
+    const { amount_cents = 1000, currency = 'cad' } = req.body;
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amount_cents,
+      currency,
+      automatic_payment_methods: { enabled: true },
+    });
+
+    res.json({
+      ok: true,
+      client_secret: paymentIntent.client_secret,
+      payment_intent_id: paymentIntent.id
+    });
+  } catch (err) {
+    console.error('CREATE ERROR', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+
+// --- CONFIRM PaymentIntent et créer commande Shopify "payée"
+app.post('/checkout/confirm', async (req, res) => {
+  try {
+    const { stripe_payment_intent_id, customer, shipping_address, items } = req.body;
+
+    if (!stripe_payment_intent_id) {
+      return res.status(400).json({ ok: false, error: 'missing payment id' });
+    }
+
+    // Récupère le PaymentIntent
+    const pi = await stripe.paymentIntents.retrieve(stripe_payment_intent_id);
+
+    if (pi.status !== 'succeeded') {
+      return res.status(400).json({ ok: false, error: `PaymentIntent not succeeded (${pi.status})` });
+    }
+
+    // Crée commande Shopify (payée)
+    const response = await fetch(`https://${process.env.SHOP_DOMAIN}/admin/api/2023-10/orders.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": process.env.SHOPIFY_ACCESS_TOKEN
+      },
+      body: JSON.stringify({
+        order: {
+          email: customer?.email || "client@example.com",
+          financial_status: "paid",
+          note: `Paiement Stripe ID: ${stripe_payment_intent_id}`,
+          shipping_address,
+          line_items: (items || []).map(i => ({
+            title: i.title,
+            quantity: i.qty,
+            price: (i.price_cents / 100).toFixed(2)
+          }))
+        }
+      })
+    });
+
+    const created = await response.json();
+    res.json({ ok: true, created });
+  } catch (err) {
+    console.error('CONFIRM ERROR', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+
+// --- COD (paiement à la livraison)
+app.post('/checkout/cod', async (req, res) => {
+  try {
+    const { customer, shipping_address, items, total_cents } = req.body;
+
+    const response = await fetch(`https://${process.env.SHOP_DOMAIN}/admin/api/2023-10/orders.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": process.env.SHOPIFY_ACCESS_TOKEN
+      },
+      body: JSON.stringify({
+        order: {
+          email: customer?.email || "client@example.com",
+          financial_status: "pending",
+          note: "Commande COD (paiement à la livraison)",
+          shipping_address,
+          total_price: (total_cents / 100).toFixed(2),
+          line_items: (items || []).map(i => ({
+            title: i.title,
+            quantity: i.qty,
+            price: (i.price_cents / 100).toFixed(2)
+          }))
+        }
+      })
+    });
+
+    const created = await response.json();
+    res.json({ ok: true, created });
+  } catch (err) {
+    console.error('COD ERROR', err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 // --- health route
 app.get('/', (_req, res) => res.send('Split checkout server running'));
