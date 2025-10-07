@@ -36,7 +36,7 @@
     <div id="card-element"></div>
 
     <div class="row" style="margin-top:12px">
-      <button id="create-full">1) Créer paiement (100%)</button>
+      <button id="create-full">1) payer par carte</button>
       <button id="pay-now">Payer maintenant</button>
       <button id="cod-button" style="background:#0a7; border-color:#0a7">2) Paiement à la livraison</button>
       <button id="split-20" style="background:#0553b1; border-color:#0553b1">3) Split 20% carte + 80% COD</button>
@@ -180,65 +180,6 @@
           out.textContent = JSON.stringify({ cod: data }, null, 2);
           hint.className = data.ok ? "ok" : "warn";
           hint.textContent = data.ok ? "✅ Commande COD créée." : "⚠️ Erreur COD — vois la console.";
-        }catch(e){
-          out.textContent = String(e);
-        }
-      };
-
-      // ---------------------------------------------------------
-      // 3) SPLIT — 20% carte (Stripe) + 80% COD (Shopify)
-      // ---------------------------------------------------------
-      $("#split-20").onclick = async ()=>{
-        if(!ensureStripe()) return;
-        try{
-          const total = 20000;          // ex: 200.00$ total
-          const deposit = Math.round(total * 0.20); // 20%
-          const remaining = total - deposit;
-
-          // a) créer PI uniquement pour l’acompte
-          const piRes = await fetch('/checkout/create', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ amount_cents: deposit, currency: 'cad' })
-          });
-          const pi = await piRes.json();
-          if(!pi.ok){ out.textContent = JSON.stringify(pi,null,2); return; }
-          secretInput.value = pi.client_secret;
-
-          // b) payer l’acompte
-          const { paymentIntent, error } = await stripe.confirmCardPayment(pi.client_secret, {
-            payment_method: { card }
-          });
-          if(error){ out.textContent = JSON.stringify({stripe_error:error.message}, null, 2); return; }
-
-          // c) créer commande Shopify COD pour le solde
-          const codRes = await fetch('/checkout/cod', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({
-              customer: { email: 'client@example.com' },
-              shipping_address: {
-                first_name:'Split', last_name:'Client',
-                address1:'10 Rue Test', city:'Quebec',
-                province:'QC', country:'CA', zip:'G1G1G1'
-              },
-              items: [
-                { title:'Solde à la livraison (80%)', qty:1, price_cents: remaining }
-              ],
-              total_cents: remaining
-            })
-          });
-          const cod = await codRes.json();
-
-          out.textContent = JSON.stringify({
-            split: {
-              deposit_paid_stripe: paymentIntent,
-              cod_order_for_remaining: cod
-            }
-          }, null, 2);
-
-          hint.className = "ok";
-          hint.textContent = "✅ Split réussi : 20% payé, 80% en COD.";
         }catch(e){
           out.textContent = String(e);
         }
