@@ -119,6 +119,60 @@
           log({ error: e?.message || String(e) }, 'Exception');
         }
       };
-    </script>
+  // === Paiement à la livraison (COD) ===
+document.getElementById('cod-button').addEventListener('click', async () => {
+  const btn = document.getElementById('cod-button');
+  btn.disabled = true;
+  btn.textContent = 'Création de la commande...';
+
+  try {
+    const response = await fetch('/checkout/cod', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customer: {
+          email: 'client@example.com',
+        },
+        shipping_address: {
+          first_name: 'Brandon',
+          last_name: 'Lavoie',
+          address1: '123 rue du Lac',
+          city: 'Dégelis',
+          province: 'QC',
+          country: 'CA',
+          zip: 'G5T1R3'
+        },
+        // Tu peux aussi mettre des vrais items Shopify ici si tu veux
+        items: [
+          {
+            title: 'Commande COD - Exemple',
+            qty: 1,
+            price_cents: 2000
+          }
+        ],
+        total_cents: 2000 // total 20.00$
+      })
+    });
+
+    const data = await response.json();
+    console.log('Réponse COD:', data);
+
+    if (data.ok) {
+      alert('✅ Commande COD créée avec succès sur Shopify !');
+      console.log('Commande Shopify:', data.created);
+    } else {
+      alert('❌ Erreur lors de la création de la commande COD');
+      console.error(data.error);
+    }
+
+  } catch (err) {
+    console.error('Erreur COD:', err);
+    alert('Erreur côté serveur.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Paiement à la livraison';
+  }
+});
+  </script>
   </body>
 </html>
