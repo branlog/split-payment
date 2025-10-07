@@ -36,10 +36,10 @@
     <div id="card-element"></div>
 
     <div class="row" style="margin-top:12px">
-      <button id="create-full">1) payer par carte</button>
+  
       <button id="pay-now">Payer maintenant</button>
       <button id="cod-button" style="background:#0a7; border-color:#0a7">2) Paiement à la livraison</button>
-      <button id="split-20" style="background:#0553b1; border-color:#0553b1">3) Split 20% carte + 80% COD</button>
+
     </div>
 
     <p id="hint" class="warn">Stripe initialisé. Entre le <b>client_secret</b> (ou clique “Créer paiement”) puis clique “Payer maintenant”.</p>
@@ -87,33 +87,7 @@
       }
       ensureStripe();
 
-      // ---------------------------------------------------------
-      // 1) Créer PaymentIntent (100%) côté serveur
-      // ---------------------------------------------------------
-      $("#create-full").onclick = async ()=>{
-        if(!ensureStripe()) return;
-        try{
-          const res = await fetch('/checkout/create', {
-            method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({
-              amount_cents: 2000,     // 20.00 CAD pour le test
-              currency: 'cad'
-            })
-          });
-          const data = await res.json();
-          if(data.ok){
-            secretInput.value = data.client_secret;
-            out.textContent = JSON.stringify({create:data}, null, 2);
-            hint.className = "ok";
-            hint.textContent = "✅ Paiement créé. Tu peux maintenant cliquer 'Payer maintenant'.";
-          }else{
-            out.textContent = JSON.stringify(data, null, 2);
-          }
-        }catch(e){
-          out.textContent = String(e);
-        }
-      };
+
 
       // ---------------------------------------------------------
       // Paiement CARTE (confirmation du PaymentIntent existant)
