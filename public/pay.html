@@ -1,138 +1,124 @@
-
 <!doctype html>
-<html>
+<html lang="fr">
   <head>
-    <meta charset="utf-8">
-    <title>Stripe Test - Split Checkout (Card Portion)</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8" />
+    <title>Paiement test (portion carte)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://js.stripe.com/v3/"></script>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 18px; }
+      input { width: 100%; max-width: 640px; padding: 8px; margin: 6px 0 12px; }
+      #card-element { padding: 12px; border: 1px solid #ddd; border-radius: 6px; max-width: 640px; }
+      button { padding: 10px 14px; border: 0; border-radius: 6px; cursor: pointer; }
+      .primary { background: #0a5; color: #fff; }
+      .muted { background:#eee; color:#333; }
+      pre { background:#f7f7f7; padding:12px; white-space:pre-wrap; max-width: 820px; overflow:auto; }
+      .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    </style>
   </head>
   <body>
     <h2>Paiement test (portion carte)</h2>
-    <p>Carte test Stripe: <b>4242 4242 4242 4242</b>, date future, CVC 123.</p>
-    <div>
-      <label>Client Secret (auto depuis URL ?secret=...):</label><br>
-      <input id="secret" placeholder="pi_xxx_secret_xxx" style="width:100%;max-width:600px;">
-    </div>
-    <div style="margin-top:10px;">
-      <label>Stripe Publishable Key (auto depuis URL ?pk=...):</label><br>
-      <input id="pk" placeholder="pk_test_xxx" style="width:100%;max-width:600px;">
-    </div>
-    <div id="card-element" style="margin:16px 0;"></div>
-    <button id="pay">Payer maintenant</button>
-    <pre id="out" style="margin-top:16px;background:#f7f7f7;padding:12px;white-space:pre-wrap;"></pre>
+    <p>Carte test Stripe : <b>4242 4242 4242 4242</b> • date future • CVC <b>123</b>.</p>
 
-    <script src="https://js.stripe.com/v3/"></script>
+    <label>Client Secret (auto depuis URL <code>?secret=...</code>)</label>
+    <input id="secret" placeholder="pi_xxx_secret_xxx" />
+
+    <label>Stripe Publishable Key (auto depuis URL <code>?pk=...</code>)</label>
+    <input id="pk" placeholder="pk_test_xxx" />
+
+    <div class="row">
+      <button id="prefill" class="muted" type="button">Enregistrer avec link</button>
+    </div>
+
+    <div id="card-element" style="margin:12px 0;"></div>
+
+    <div class="row">
+      <button id="pay" class="primary" type="button">Payer maintenant</button>
+      <span id="status" aria-live="polite"></span>
+    </div>
+
+    <h3>Résultat</h3>
+    <pre id="out">En attente…</pre>
+
     <script>
+      // --- helpers
+      const $ = (id) => document.getElementById(id);
+      const out = $('out'), statusEl = $('status');
+      function log(obj, title) {
+        out.textContent = (title ? (title + ' :\n') : '') + JSON.stringify(obj, null, 2);
+      }
       function getParam(name){
         const u = new URL(window.location.href);
         return u.searchParams.get(name);
       }
-      const secretInput = document.getElementById('secret');
-      const pkInput = document.getElementById('pk');
-      const out = document.getElementById('out');
-      secretInput.value = getParam('secret') || '';
-      pkInput.value = getParam('pk') || '';
 
+      // --- read URL params
+      $('secret').value = getParam('secret') || '';
+      $('pk').value = getParam('pk') || '';
+
+      // --- Stripe init (once)
       let stripe, elements, card;
-      function initStripe(){
-        const pk = pkInput.value.trim();
-        if(!pk){ out.textContent = "⚠️ Entre ta clé Stripe publishable (pk_test_...)"; return; }
+      function initStripe() {
+        const pk = $('pk').value.trim();
+        if(!pk){ statusEl.textContent = '⚠️ Entrer votre clé publishable (pk_test...)'; return; }
         stripe = Stripe(pk);
         elements = stripe.elements();
         card = elements.create('card');
         card.mount('#card-element');
-        out.textContent = "✅ Stripe initialisé. Entre le client secret puis clique Payer.";
+        statusEl.textContent = '✅ Stripe initialisé. Entrer le client_secret puis cliquer Payer.';
+        log({hint: 'Remplissez secret + pk (ou mettez-les dans l’URL ?secret=...&pk=...) puis payez.'});
       }
       initStripe();
 
-      document.getElementById('pay').onclick = async () => {
-        try{
-          const secret = secretInput.value.trim();
-          if(!secret){ out.textContent = "⚠️ Entre un client_secret Stripe."; return; }
-          const {paymentIntent, error} = await stripe.confirmCardPayment(secret, {
+      // --- bouton "Enregistrer avec link" : met pk+secret dans l’URL pour recharger la page
+      $('prefill').onclick = () => {
+        const url = new URL(window.location.href);
+        url.searchParams.set('pk', $('pk').value.trim());
+        url.searchParams.set('secret', $('secret').value.trim());
+        window.location.href = url.toString();
+      };
+
+      // --- bouton "Payer maintenant"
+      $('pay').onclick = async () => {
+        try {
+          const clientSecret = $('secret').value.trim();
+          if(!clientSecret){ statusEl.textContent = '⚠️ Entrer un client_secret Stripe.'; return; }
+          if(!stripe || !card){ initStripe(); if(!stripe) return; }
+
+          statusEl.textContent = '⏳ Confirmation du paiement…';
+          const {paymentIntent, error} = await stripe.confirmCardPayment(clientSecret, {
             payment_method: { card }
           });
-          if(error){
-            out.textContent = "❌ " + error.message;
-          } else {
-            out.textContent = "✅ Statut: " + paymentIntent.status + "\nPaymentIntent ID: " + paymentIntent.id;
-          }
-          // Après le paiement réussi :
-if (paymentIntent.status === "succeeded") {
-  fetch("https://split-payment-uymv.onrender.com/checkout/confirm", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      payment_intent_id: paymentIntent.id,
-      card_amount: 2599, // tu peux dynamiquement mettre le montant carte
-      cod_amount: 1899,  // si tu veux tester le split complet
-      customer: { email: "client@example.com" },
-      shipping_address: {
-        first_name: "Jean",
-        last_name: "Dubois",
-        address1: "123 Rue",
-        city: "Quebec",
-        country: "CA"
-      },
-      items: [{ variant_id: 123, qty: 1, pay_method: "card" }]
-    })
-  })
-  .then(r => r.json())
-  .then(res => {
-    out.textContent += "\n\n📦 Commande Shopify : " + JSON.stringify(res, null, 2);
-  })
-  .catch(err => {
-    out.textContent += "\n\n❌ Erreur de confirmation : " + err;
-  });
-}
 
-        }catch(e){
-          out.textContent = "❌ " + (e.message || e);
+          if(error){
+            statusEl.textContent = '❌ Paiement refusé';
+            log({error: error.message}, 'Stripe');
+            return;
+          }
+
+          log({ status: paymentIntent.status, id: paymentIntent.id }, 'Stripe');
+          statusEl.textContent = '✅ Paiement réussi, création commande…';
+
+          // --- appelle ton backend pour la confirmation Shopify
+          const resp = await fetch('/checkout/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              stripe_payment_intent_id: paymentIntent.id,
+              customer: { email: 'client@example.com' },
+              shipping_address: { address1: '123 Rue', city: 'Québec' },
+              items: [] // ici tu peux envoyer tes lignes si besoin
+            })
+          });
+
+          const data = await resp.json();
+          statusEl.textContent = data.ok ? '✅ Commande confirmée' : '⚠️ Confirmation avec avertissement';
+          out.textContent += '\n\n📦 Commande Shopify :\n' + JSON.stringify(data, null, 2);
+        } catch (e) {
+          statusEl.textContent = '❌ Erreur';
+          log({ error: e?.message || String(e) }, 'Exception');
         }
       };
     </script>
-    <script>
-  async function handlePayment() {
-    const stripe = Stripe(document.getElementById("pk").value);
-    const clientSecret = document.getElementById("secret").value;
-
-    const elements = stripe.elements();
-    const cardElement = elements.create("card");
-    cardElement.mount("#card-element");
-
-    const result = await stripe.confirmCardPayment(clientSecret, {
-      payment_method: {
-        card: cardElement,
-      },
-    });
-
-    const resultDiv = document.getElementById("result");
-    if (result.error) {
-      resultDiv.innerHTML = "❌ Erreur : " + result.error.message;
-    } else if (result.paymentIntent.status === "succeeded") {
-      resultDiv.innerHTML =
-        "<p>✅ Statut : succeeded</p><p>PaymentIntent ID: " +
-        result.paymentIntent.id +
-        "</p>";
-
-      // ⬇️ Envoie l’ID au backend pour créer la commande Shopify
-      const confirmRes = await fetch("/checkout/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          stripe_payment_intent_id: result.paymentIntent.id,
-          customer: { email: "client@example.com" },
-          shipping_address: { address1: "Test", city: "Québec" },
-          items: [],
-        }),
-      });
-
-      const data = await confirmRes.json();
-      resultDiv.innerHTML +=
-        "<pre>📦 Commande Shopify : " + JSON.stringify(data, null, 2) + "</pre>";
-    }
-  }
-</script>
-
   </body>
 </html>
