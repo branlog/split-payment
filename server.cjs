@@ -9,34 +9,61 @@ const Stripe = require('stripe');
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
-app.use(express.static('public')); // sert /pay.html
+app.use(express.static('public'));
 
-// ---- ENV
 const PORT = process.env.PORT || 3000;
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOP_DOMAIN = process.env.SHOP_DOMAIN;
 
-if (!STRIPE_SECRET_KEY) console.warn('⚠️ Missing STRIPE_SECRET_KEY');
-if (!SHOPIFY_ACCESS_TOKEN) console.warn('⚠️ Missing SHOPIFY_ACCESS_TOKEN');
-if (!SHOP_DOMAIN) console.warn('⚠️ Missing SHOP_DOMAIN');
-
 const stripe = new Stripe(STRIPE_SECRET_KEY || '', { apiVersion: '2024-06-20' });
 
-// ---- helpers
-const toInt = (n) => {
-  const v = Number(n);
-  return Number.isFinite(v) ? Math.round(v) : 0;
-};
+// --- health route
+app.get('/', (_req, res) => res.send('Split checkout server running'));
+app.get('/health', (_req, res) => res.json({ ok: true }));
 
-const splitItems = (items = []) => {
-  const normalized = items
-    .filter((it) => it && it.variant_id && it.qty)
-    .map((it) => ({
-      variant_id: Number(it.variant_id),
-      qty: Number(it.qty),
-      price_cents: toInt(it.price_cents),
-      pay_method: it.pay_method === 'cod' ? 'cod' : 'card',
-    }));
+// --- create payment intent
+app.post('/checkout/create', async (req, res) => {
+  try {
+    const { items = [] } = req.body;
+    const card_cents = 1000;
+    const cod_cents = 500;
 
-  const card = [];
+    const pi = await stripe.paymentIntents.create({
+      amount: card_cents,
+      currency: 'cad',
+      automatic_payment_methods: { enabled: true },
+    });
+
+    res.json({
+      ok: true,
+      payment_intent_id: pi.id,
+      client_secret: pi.client_secret,
+      amounts: { card_cents, cod_cents },
+    });
+  } catch (err) {
+    console.error('CREATE ERROR', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// --- confirm
+app.post('/checkout/confirm', async (req, res) => {
+  try {
+    const { stripe_payment_intent_id } = req.body;
+    if (!stripe_payment_intent_id)
+      return res.status(400).json({ ok: false, error: 'missing payment id' });
+
+    const pi = await stripe.paymentIntents.retrieve(stripe_payment_intent_id);
+    if (pi.status !== 'succeeded')
+      return res.status(400).json({ ok: false, error: 'payment not succeeded' });
+
+    res.json({ ok: true, confirmed: pi.id });
+  } catch (err) {
+    console.error('CONFIRM ERROR', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// --- start
+app.listen(PORT, () => console.log(`✅ Split server listening on port ${PORT}`));
