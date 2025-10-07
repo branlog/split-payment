@@ -338,7 +338,48 @@ app.post('/checkout/cod', async (req, res) => {
     console.error('CONFIRM ERROR', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
+});// Crée une "session" : calcule les montants et crée le PaymentIntent Stripe pour la portion carte
+app.post('/checkout/create', async (req, res) => {
+  try {
+    const { customer = {}, shipping_address = {}, items = [] } = req.body || {};
+
+    let card_cents = 0;
+    let cod_cents = 0;
+
+    for (const it of items) {
+      const qty = Number(it.qty || 1);
+      const price_cents = Number(it.price_cents || 0);
+      const subtotal = qty * price_cents;
+      if (String(it.pay_method) === 'cod') cod_cents += subtotal;
+      else card_cents += subtotal; // défaut: carte
+    }
+
+    let pi = null;
+    let client_secret = null;
+
+    if (card_cents > 0) {
+      pi = await stripe.paymentIntents.create({
+        amount: card_cents,
+        currency: 'cad', // change si besoin
+        automatic_payment_methods: { enabled: true },
+        metadata: { app: 'split-checkout', cod_cents: String(cod_cents) },
+      });
+      client_secret = pi.client_secret;
+    }
+
+    return res.json({
+      ok: true,
+      payment_intent_id: pi ? pi.id : null,
+      client_secret,
+      amounts: { card_cents, cod_cents },
+      echo: { customer, shipping_address, items },
+    });
+  } catch (err) {
+    console.error('CREATE ERROR', err?.message || err);
+    return res.status(500).json({ ok: false, error: err?.message || 'server_error' });
+  }
 });
+
 
 // --- start
 app.listen(PORT, () => console.log(`✅ Split server listening on port ${PORT}`));
