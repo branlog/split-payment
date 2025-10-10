@@ -10,11 +10,11 @@
     "cors": "^2.8.5",
     "body-parser": "^1.20.2",
     "axios": "^1.6.7",
-    "stripe": "^15.10.0", // Ajoute cette ligne si absente
+    "stripe": "^15.10.0",
     "dotenv": "^16.4.5"
   },
   "type": "commonjs",
   "engines": {
-    "node": "18.x" // Spécifie une version compatible
+    "node": "18.x"
   }
 }
