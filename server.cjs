@@ -31,7 +31,7 @@ if (!STRIPE_SECRET_KEY || !SHOPIFY_ACCESS_TOKEN || !SHOP_DOMAIN || !WEBHOOK_SECR
   process.exit(1);
 }
 
-const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: '2024-10-01' });
+const stripe = new Stripe(STRIPE_SECRET_KEY)
 
 // --- CREATE PaymentIntent (Stripe) et calcule split
 app.post('/checkout/create', async (req, res) => {
