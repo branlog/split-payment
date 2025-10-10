@@ -10,8 +10,8 @@ const app = express();
 // au top, après app = express()
 app.use(cors({
   origin: [
-    'https://ton-boutique.myshopify.com',
-    'https://preview-ton-boutique.myshopify.com' // si tu prévisualises
+    'https://logtek.ca',
+    'https://preview-logtek.ca' // si tu prévisualises
   ],
   methods: ['GET','POST'],
 }));
