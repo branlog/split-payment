@@ -7,7 +7,15 @@ const axios = require('axios');
 const Stripe = require('stripe');
 
 const app = express();
-app.use(cors());
+// au top, après app = express()
+app.use(cors({
+  origin: [
+    'https://ton-boutique.myshopify.com',
+    'https://preview-ton-boutique.myshopify.com' // si tu prévisualises
+  ],
+  methods: ['GET','POST'],
+}));
+
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
