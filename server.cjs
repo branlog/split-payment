@@ -292,13 +292,36 @@ app.post('/checkout/cod', async (req, res) => {
       return res.status(403).json({ ok: false, error: 'not_authorized' });
     }
 
-    const line_items = (Array.isArray(items) && items.length)
-      ? items.map((it) => ({
-          title: it.title || 'Article COD',
-          quantity: it.qty || 1,
-          price: ((it.price_cents ?? 0) / 100).toFixed(2),
-        }))
-      : [{ title: 'Paiement à la livraison', quantity: 1, price: (total_cents / 100).toFixed(2) }];
+    const let line_items = [];
+if (Array.isArray(items) && items.length) {
+  line_items = items.map((it) => {
+    const qty = Number(it.qty || 1);
+
+    if (it.variant_id) {
+      // Si on a un variant, on laisse Shopify tarifer; on passe juste qty
+      return { variant_id: Number(it.variant_id), quantity: qty };
+    }
+
+    // Sinon, on fixe un prix : priorité au prix unitaire si disponible,
+    // sinon, on divise le total de ligne par qty.
+    let unit = Number(it.unit_price_cents);
+    if (!Number.isFinite(unit) && Number.isFinite(Number(it.line_total_cents)) && qty > 0) {
+      unit = Math.round(Number(it.line_total_cents) / qty);
+    }
+
+    return {
+      title: it.title || 'Article',
+      quantity: qty,
+      price: Number.isFinite(unit) ? (unit / 100).toFixed(2) : '0.00',
+    };
+  });
+} else {
+  line_items = [{
+    title: 'Paiement carte (Stripe)',
+    quantity: 1,
+    price: (amount_cents / 100).toFixed(2),
+  }];
+}
 
     const orderPayload = {
       order: {
