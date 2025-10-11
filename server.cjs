@@ -8,50 +8,48 @@ const Stripe = require('stripe');
 
 const app = express();
 
-// ===== ENV =====
+/* ===================== ENV ===================== */
 const PORT = process.env.PORT || 3000;
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOP_DOMAIN = process.env.SHOP_DOMAIN; // ex: logtek.myshopify.com
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
-const REQUIRE_LOGIN = process.env.REQUIRE_LOGIN === '1';          // exige un email client
-const REQUIRE_SPLIT_TAG = process.env.REQUIRE_SPLIT_TAG === '1';  // exige le tag client 'split'
+const REQUIRE_LOGIN = process.env.REQUIRE_LOGIN === '1';          // exige un email côté client
+const REQUIRE_SPLIT_TAG = process.env.REQUIRE_SPLIT_TAG === '1';  // exige le tag 'split' sur le client
 
-// ===== CHECK ENV =====
 if (!STRIPE_SECRET_KEY || !SHOPIFY_ACCESS_TOKEN || !SHOP_DOMAIN || !WEBHOOK_SECRET) {
   console.error('❌ Missing env: STRIPE_SECRET_KEY / SHOPIFY_ACCESS_TOKEN / SHOP_DOMAIN / WEBHOOK_SECRET');
   process.exit(1);
 }
 
-// ===== STRIPE =====
-const stripe = new Stripe(STRIPE_SECRET_KEY); // ou { apiVersion: '2024-06-20' } si tu veux épingler
+/* ===================== STRIPE ===================== */
+const stripe = new Stripe(STRIPE_SECRET_KEY); // (tu peux épingler: { apiVersion: '2024-06-20' })
 
-// ===== CORS =====
+/* ===================== CORS ===================== */
 app.use(cors({
   origin: [
     'https://logtek.ca',
-    'https://preview-logtek.ca',     // si tu prévisualises
+    'https://preview-logtek.ca',     // si prévisualisation
     'https://logtek.myshopify.com'   // domaine .myshopify.com
   ],
   methods: ['GET','POST'],
   credentials: true
 }));
 
-// ===== STATIC =====
+/* ===================== STATIC ===================== */
 app.use(express.static('public'));
 
-/**
- * IMPORTANT : le webhook DOIT être défini AVANT bodyParser.json()
- * pour recevoir le body "raw" et vérifier la signature Stripe.
- */
+/* ==================================================
+   WEBHOOK STRIPE (⚠️ doit être AVANT bodyParser.json)
+================================================== */
 app.post('/stripe/webhook', bodyParser.raw({ type: 'application/json' }), (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, WEBHOOK_SECRET);
   } catch (err) {
-    console.error('❌ Webhook signature verification failed:', err.message);
+    console.error('❌ Webhook signature failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
@@ -65,27 +63,35 @@ app.post('/stripe/webhook', bodyParser.raw({ type: 'application/json' }), (req, 
     default:
       console.log(`ℹ️ Unhandled event type ${event.type}`);
   }
-
   res.json({ received: true, eventType: event.type, id: event.id });
 });
 
-// Le JSON parser global pour le reste des routes
+/* ===================== JSON pour le reste ===================== */
 app.use(bodyParser.json());
 
-// ===== HELPERS =====
+/* ===================== HELPERS ===================== */
+function requireAuthOr403(customer) {
+  const email = (customer?.email || '').trim();
+  if (REQUIRE_LOGIN && !email) {
+    return { ok: false, status: 403, error: 'login_required' };
+  }
+  return { ok: true, email };
+}
+
 async function isCustomerAllowed(email) {
   try {
     if (!email) return !REQUIRE_LOGIN && !REQUIRE_SPLIT_TAG; // si rien d'exigé, autorise; sinon refuse
-    if (!REQUIRE_SPLIT_TAG) return true; // si tag non requis, ok
+    if (!REQUIRE_SPLIT_TAG) return true; // si le tag n'est pas requis, OK
 
     const url = `https://${SHOP_DOMAIN}/admin/api/2024-10/customers/search.json?query=${encodeURIComponent(`email:${email}`)}`;
     const r = await axios.get(url, {
       headers: {
         'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/json'
       },
-      timeout: 10000,
+      timeout: 10000
     });
+
     const customers = r.data?.customers || [];
     if (!customers.length) return false;
 
@@ -98,71 +104,65 @@ async function isCustomerAllowed(email) {
   }
 }
 
-function requireAuthOr403(customer) {
-  const email = (customer?.email || '').trim();
-  if (REQUIRE_LOGIN && !email) {
-    return { ok: false, status: 403, error: 'login_required' };
-  }
-  return { ok: true, email };
-}
-
-// ===== HEALTH =====
+/* ===================== HEALTH ===================== */
 app.get('/', (_req, res) => res.send('Split checkout server running'));
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
-// ===== CREATE PaymentIntent & split =====
+/* ==================================================
+   CREATE : calcule carte/COD + PaymentIntent
+   Correctif de calcul : line_total_cents > unit_price_cents*qty > price_cents*qty
+================================================== */
 app.post('/checkout/create', async (req, res) => {
   try {
     const { customer = {}, shipping_address = {}, items = [] } = req.body || {};
 
     const auth = requireAuthOr403(customer);
     if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
-
     if (!(await isCustomerAllowed(auth.email))) {
       return res.status(403).json({ ok: false, error: 'not_authorized' });
     }
 
-let card_cents = 0;
-let cod_cents = 0;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ ok: false, error: 'no_items' });
+    }
 
-if (!Array.isArray(items) || items.length === 0) {
-  return res.status(400).json({ ok: false, error: 'no_items' });
-}
+    let card_cents = 0;
+    let cod_cents = 0;
 
-for (const it of items) {
-  const qty = Number(it.qty || 1);
+    for (const it of items) {
+      const qty = Number(it.qty || 1);
 
-  // Priorité 1 : total de ligne fourni (déjà qty * unit)
-  let subtotal = Number(it.line_total_cents);
+      // Priorité 1: total de ligne (déjà qty × unit)
+      let subtotal = Number(it.line_total_cents);
 
-  // Priorité 2 : prix unitaire × qty
-  if (!Number.isFinite(subtotal)) {
-    const unit = Number(it.unit_price_cents);
-    if (Number.isFinite(unit)) subtotal = unit * qty;
-  }
+      // Priorité 2: unit_price_cents × qty
+      if (!Number.isFinite(subtotal)) {
+        const unit = Number(it.unit_price_cents);
+        if (Number.isFinite(unit)) subtotal = unit * qty;
+      }
 
-  // Dernier recours : ancien champ price_cents (unitaire) × qty
-  if (!Number.isFinite(subtotal)) {
-    const legacy = Number(it.price_cents);
-    if (Number.isFinite(legacy)) subtotal = legacy * qty;
-  }
+      // Priorité 3 (legacy): price_cents (unitaire) × qty
+      if (!Number.isFinite(subtotal)) {
+        const legacy = Number(it.price_cents);
+        if (Number.isFinite(legacy)) subtotal = legacy * qty;
+      }
 
-  if (!Number.isFinite(subtotal) || subtotal < 0) {
-    return res.status(400).json({ ok: false, error: 'invalid_item' });
-  }
+      if (!Number.isFinite(subtotal) || subtotal < 0) {
+        return res.status(400).json({ ok: false, error: 'invalid_item' });
+      }
 
-  if (String(it.pay_method) === 'cod') cod_cents += subtotal;
-  else card_cents += subtotal;
-}
+      if (String(it.pay_method) === 'cod') cod_cents += subtotal;
+      else card_cents += subtotal; // défaut: carte
+    }
 
     let pi = null;
     let client_secret = null;
 
     if (card_cents > 0) {
-      // Pour les tests, on force la carte. (Tu remettras automatic_payment_methods plus tard si tu veux Apple/Google Pay)
       pi = await stripe.paymentIntents.create({
         amount: card_cents,
         currency: 'cad',
+        // pour tests : carte explicite (tu peux remettre automatic_payment_methods si tu veux APM)
         payment_method_types: ['card'],
         metadata: {
           app: 'split-checkout',
@@ -179,7 +179,7 @@ for (const it of items) {
       payment_intent_id: pi ? pi.id : null,
       client_secret,
       amounts: { card_cents, cod_cents },
-      echo: { customer, shipping_address, items },
+      echo: { customer, shipping_address, items }
     });
   } catch (err) {
     console.error('CREATE ERROR', err.response?.data || err.message);
@@ -187,7 +187,12 @@ for (const it of items) {
   }
 });
 
-// ===== CONFIRM: vérifier PI + créer commande Shopify (paid) =====
+/* ==================================================
+   CONFIRM : vérifie PI Stripe + crée la commande Shopify (paid)
+   Construction line_items :
+   - si variant_id : Shopify calcule le prix (recommandé)
+   - sinon : on passe un PRIX UNITAIRE (dérivé si besoin)
+================================================== */
 app.post('/checkout/confirm', async (req, res) => {
   try {
     const { stripe_payment_intent_id, customer = {}, shipping_address = {}, items = [] } = req.body || {};
@@ -198,7 +203,6 @@ app.post('/checkout/confirm', async (req, res) => {
 
     const auth = requireAuthOr403(customer);
     if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
-
     if (!(await isCustomerAllowed(auth.email))) {
       return res.status(403).json({ ok: false, error: 'not_authorized' });
     }
@@ -212,20 +216,42 @@ app.post('/checkout/confirm', async (req, res) => {
     const amount_cents = pi.amount_received || pi.amount || 0;
     const currency = (pi.currency || 'CAD').toUpperCase();
 
-    // 2) line_items Shopify
+    // 2) Construire line_items
     let line_items = [];
     if (Array.isArray(items) && items.length) {
       line_items = items.map((it) => {
-        const qty = it.qty ?? 1;
-        if (it.variant_id) return { variant_id: Number(it.variant_id), quantity: qty };
+        const qty = Number(it.qty || 1);
+
+        if (it.variant_id) {
+          return { variant_id: Number(it.variant_id), quantity: qty };
+        }
+
+        // Déterminer un PRIX UNITAIRE (Shopify s'attend à unitaire)
+        let unit = Number(it.unit_price_cents);
+
+        // Si pas d'unitaire, tenter line_total_cents / qty
+        if (!Number.isFinite(unit) && Number.isFinite(Number(it.line_total_cents)) && qty > 0) {
+          unit = Math.round(Number(it.line_total_cents) / qty);
+        }
+
+        // Dernier recours: legacy price_cents
+        if (!Number.isFinite(unit) && Number.isFinite(Number(it.price_cents))) {
+          unit = Number(it.price_cents);
+        }
+
         return {
           title: it.title || 'Article',
           quantity: qty,
-          price: ((it.price_cents ?? 0) / 100).toFixed(2),
+          price: Number.isFinite(unit) ? (unit / 100).toFixed(2) : '0.00'
         };
       });
     } else {
-      line_items = [{ title: 'Paiement carte (Stripe)', quantity: 1, price: (amount_cents / 100).toFixed(2) }];
+      // fallback: une seule ligne "Paiement carte"
+      line_items = [{
+        title: 'Paiement carte (Stripe)',
+        quantity: 1,
+        price: (amount_cents / 100).toFixed(2)
+      }];
     }
 
     // 3) Adresse
@@ -237,7 +263,7 @@ app.post('/checkout/confirm', async (req, res) => {
       city: shipping_address.city || 'Quebec',
       province: shipping_address.province || '',
       country: shipping_address.country || 'CA',
-      zip: shipping_address.zip || '',
+      zip: shipping_address.zip || ''
     };
 
     // 4) Payload Shopify
@@ -253,11 +279,11 @@ app.post('/checkout/confirm', async (req, res) => {
           kind: 'sale',
           status: 'success',
           amount: (amount_cents / 100).toFixed(2),
-          currency,
+          currency
         }],
         send_receipt: false,
-        send_fulfillment_receipt: false,
-      },
+        send_fulfillment_receipt: false
+      }
     };
 
     // 5) API Shopify
@@ -267,9 +293,9 @@ app.post('/checkout/confirm', async (req, res) => {
       {
         headers: {
           'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
         },
-        timeout: 15000,
+        timeout: 15000
       }
     );
 
@@ -280,48 +306,45 @@ app.post('/checkout/confirm', async (req, res) => {
   }
 });
 
-// ===== COD → commande pending =====
+/* ==================================================
+   COD : crée une commande "pending"
+   (même logique de prix pour items non-variant)
+================================================== */
 app.post('/checkout/cod', async (req, res) => {
   try {
     const { customer = {}, shipping_address = {}, items = [], total_cents = 0 } = req.body || {};
 
     const auth = requireAuthOr403(customer);
     if (!auth.ok) return res.status(auth.status).json({ ok: false, error: auth.error });
-
     if (!(await isCustomerAllowed(auth.email))) {
       return res.status(403).json({ ok: false, error: 'not_authorized' });
     }
 
-    const let line_items = [];
-if (Array.isArray(items) && items.length) {
-  line_items = items.map((it) => {
-    const qty = Number(it.qty || 1);
-
-    if (it.variant_id) {
-      // Si on a un variant, on laisse Shopify tarifer; on passe juste qty
-      return { variant_id: Number(it.variant_id), quantity: qty };
-    }
-
-    // Sinon, on fixe un prix : priorité au prix unitaire si disponible,
-    // sinon, on divise le total de ligne par qty.
-    let unit = Number(it.unit_price_cents);
-    if (!Number.isFinite(unit) && Number.isFinite(Number(it.line_total_cents)) && qty > 0) {
-      unit = Math.round(Number(it.line_total_cents) / qty);
-    }
-
-    return {
-      title: it.title || 'Article',
-      quantity: qty,
-      price: Number.isFinite(unit) ? (unit / 100).toFixed(2) : '0.00',
-    };
-  });
-} else {
-  line_items = [{
-    title: 'Paiement carte (Stripe)',
-    quantity: 1,
-    price: (amount_cents / 100).toFixed(2),
-  }];
-}
+    const line_items = (Array.isArray(items) && items.length)
+      ? items.map((it) => {
+          const qty = Number(it.qty || 1);
+          if (it.variant_id) {
+            return { variant_id: Number(it.variant_id), quantity: qty };
+          }
+          // déterminer prix unitaire
+          let unit = Number(it.unit_price_cents);
+          if (!Number.isFinite(unit) && Number.isFinite(Number(it.line_total_cents)) && qty > 0) {
+            unit = Math.round(Number(it.line_total_cents) / qty);
+          }
+          if (!Number.isFinite(unit) && Number.isFinite(Number(it.price_cents))) {
+            unit = Number(it.price_cents);
+          }
+          return {
+            title: it.title || 'Article COD',
+            quantity: qty,
+            price: Number.isFinite(unit) ? (unit / 100).toFixed(2) : '0.00'
+          };
+        })
+      : [{
+          title: 'Paiement à la livraison',
+          quantity: 1,
+          price: (Number(total_cents) / 100).toFixed(2)
+        }];
 
     const orderPayload = {
       order: {
@@ -332,8 +355,8 @@ if (Array.isArray(items) && items.length) {
         shipping_address,
         note: 'Commande COD (paiement à la livraison)',
         send_receipt: false,
-        send_fulfillment_receipt: false,
-      },
+        send_fulfillment_receipt: false
+      }
     };
 
     const shopifyResp = await axios.post(
@@ -342,9 +365,9 @@ if (Array.isArray(items) && items.length) {
       {
         headers: {
           'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
         },
-        timeout: 15000,
+        timeout: 15000
       }
     );
 
@@ -355,15 +378,11 @@ if (Array.isArray(items) && items.length) {
   }
 });
 
-// ===== HANDLERS =====
+/* ===================== HANDLERS ===================== */
 async function handlePaymentSuccess(pi) {
   try {
-    const paymentIntentId = pi.id;
-    const amount = pi.amount;
-    const currency = pi.currency;
-    console.log(`✅ Payment succeeded: ${paymentIntentId}, Amount: ${amount / 100} ${currency}`);
-
-    // Exemple d'update si tu stockes orderId en metadata
+    console.log(`✅ Payment succeeded: ${pi.id}, Amount: ${pi.amount / 100} ${pi.currency}`);
+    // Exemple d’update order si tu stockes orderId en metadata
     if (SHOPIFY_ACCESS_TOKEN && SHOP_DOMAIN && pi.metadata?.orderId) {
       const orderPayload = {
         order: {
@@ -372,10 +391,10 @@ async function handlePaymentSuccess(pi) {
           transactions: [{
             kind: 'sale',
             status: 'success',
-            amount: (amount / 100).toFixed(2),
-            currency: currency.toUpperCase(),
-          }],
-        },
+            amount: (pi.amount / 100).toFixed(2),
+            currency: (pi.currency || '').toUpperCase()
+          }]
+        }
       };
       const response = await axios.put(
         `https://${SHOP_DOMAIN}/admin/api/2024-10/orders/${pi.metadata.orderId}.json`,
@@ -383,9 +402,9 @@ async function handlePaymentSuccess(pi) {
         {
           headers: {
             'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
-            'Content-Type': 'application/json',
+            'Content-Type': 'application/json'
           },
-          timeout: 15000,
+          timeout: 15000
         }
       );
       console.log('Shopify order updated:', response.data.order.id);
@@ -397,14 +416,13 @@ async function handlePaymentSuccess(pi) {
 
 async function handlePaymentFailure(pi) {
   try {
-    const paymentIntentId = pi.id;
     const lastPaymentError = pi.last_payment_error?.message || 'Unknown error';
-    console.log(`⚠️ Payment failed: ${paymentIntentId}, Reason: ${lastPaymentError}`);
+    console.log(`⚠️ Payment failed: ${pi.id}, Reason: ${lastPaymentError}`);
     // TODO: notifier le client si besoin
   } catch (err) {
     console.error('Error handling payment failure:', err.message);
   }
 }
 
-// ===== START =====
+/* ===================== START ===================== */
 app.listen(PORT, () => console.log(`✅ Split server listening on port ${PORT}`));
