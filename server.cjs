@@ -122,23 +122,38 @@ app.post('/checkout/create', async (req, res) => {
       return res.status(403).json({ ok: false, error: 'not_authorized' });
     }
 
-    let card_cents = 0;
-    let cod_cents = 0;
+let card_cents = 0;
+let cod_cents = 0;
 
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ ok: false, error: 'no_items' });
-    }
+if (!Array.isArray(items) || items.length === 0) {
+  return res.status(400).json({ ok: false, error: 'no_items' });
+}
 
-    for (const it of items) {
-      const qty = Number(it.qty || 1);
-      const price_cents = Number(it.price_cents || 0);
-      if (!Number.isFinite(qty) || !Number.isFinite(price_cents) || price_cents < 0) {
-        return res.status(400).json({ ok: false, error: 'invalid_item' });
-      }
-      const subtotal = qty * price_cents;
-      if (String(it.pay_method) === 'cod') cod_cents += subtotal;
-      else card_cents += subtotal; // défaut: carte
-    }
+for (const it of items) {
+  const qty = Number(it.qty || 1);
+
+  // Priorité 1 : total de ligne fourni (déjà qty * unit)
+  let subtotal = Number(it.line_total_cents);
+
+  // Priorité 2 : prix unitaire × qty
+  if (!Number.isFinite(subtotal)) {
+    const unit = Number(it.unit_price_cents);
+    if (Number.isFinite(unit)) subtotal = unit * qty;
+  }
+
+  // Dernier recours : ancien champ price_cents (unitaire) × qty
+  if (!Number.isFinite(subtotal)) {
+    const legacy = Number(it.price_cents);
+    if (Number.isFinite(legacy)) subtotal = legacy * qty;
+  }
+
+  if (!Number.isFinite(subtotal) || subtotal < 0) {
+    return res.status(400).json({ ok: false, error: 'invalid_item' });
+  }
+
+  if (String(it.pay_method) === 'cod') cod_cents += subtotal;
+  else card_cents += subtotal;
+}
 
     let pi = null;
     let client_secret = null;
